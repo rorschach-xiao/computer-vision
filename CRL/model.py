@@ -1,21 +1,43 @@
 import tensorflow as tf
 import numpy as np
+from math import ceil
 
-BATCH_SIZE = 12
-IMAGE_SIZE_X = 768
-IMAGE_SIZE_Y = 384
-ROUND_STEP = 12
-TRAINING_ROUNDS = 50
-LEARNING_RATE = 1e-5
-
+BATCH_SIZE = 10
+IMAGE_SIZE_X = 960
+IMAGE_SIZE_Y = 540
 def Weight(shape):
-    return tf.Variable(tf.truncated_normal(shape, stddev=0.1), name="weight");
+    initializer = tf.contrib.layers.xavier_initializer_conv2d()
+    #initializer = tf.truncated_normal(shape, stddev=0.1)
+    return tf.Variable(initializer(shape=shape), name="weight");
+
+def Bilinear_Deconv_Weight(shape,name):
+    """
+    compute the bilinear filter and return it
+    """
+    filt_width = shape[0]
+    filt_height= shape[1]
+    half_width = ceil(filt_width /2.0)
+    center = (2 * half_width - 1 - half_width % 2) / (2.0 * half_width) # 计算某点的权值  对这个点进行插值
+    bilinear = np.zeros([filt_width, filt_height])
+    for x in range(filt_width):
+        for y in range(filt_height):
+            value = (1 - abs(x / half_width - center)) * (1 - abs(y / half_width - center))
+            bilinear[x, y] = value
+    weights = np.zeros(shape)
+    for i in range(shape[2]):
+        weights[:, :, i, i] = bilinear
+        #print(weights[:, :, i, i])
+        init = tf.constant_initializer(value=weights,
+                                       dtype=tf.float32)
+
+        return tf.get_variable(name=name,initializer=init , shape=shape)
+
 
 def Bias(shape):
     return tf.Variable(tf.constant(0.1, shape=shape), name="bias");
 
 def Conv2d(x,W,strides):
-    return tf.nn.conv2d(x, W, strides=strides, padding="same");
+    return tf.nn.conv2d(x, W, strides=strides, padding="SAME");
 
 def TConv(x,W,output_shape):
     return tf.nn.conv2d_transpose(x, filter=W, output_shape=output_shape, strides=[1, 2, 2, 1], padding='SAME');
@@ -28,16 +50,17 @@ def loss(pre,gt):
     return loss
 
 def DispFulNet_model(concat_image, ground_truth, leftimg):
+
     #conv1
     with tf.name_scope('conv1'):
-        W_conv1 = Weight([7, 7, 6, 64]);
+        W_conv1 = Weight([7, 7, 6, 64]); #[kernel_size,kernel_size,input_channel,output_channel]
         b_conv1 = Bias([64]);
         h_conv1 = tf.nn.leaky_relu(Conv2d(concat_image, W_conv1, [1, 2, 2, 1])+b_conv1, alpha=0.1);
 
     #conv2
     with tf.name_scope('conv2'):
         W_conv2 = Weight([5, 5, 64, 128]);
-        b_conv2 = Bias([64]);
+        b_conv2 = Bias([128]);
         h_conv2 = tf.nn.leaky_relu(Conv2d(h_conv1, W_conv2, [1, 2, 2, 1])+b_conv2, alpha=0.1);
 
     #conv3a
@@ -88,25 +111,25 @@ def DispFulNet_model(concat_image, ground_truth, leftimg):
         b_conv6b = Bias([1024]);
         h_conv6b = tf.nn.leaky_relu(Conv2d(h_conv6a, W_conv6b, [1, 1, 1, 1]) + b_conv6b, alpha=0.1);
 
-    # pr6 +loss6
+    # pr6 _loss6
     with tf.name_scope('pr6_loss6'):
         W_pr6 = Weight([3, 3, 1024, 1]);
         b_pr6 = Bias([1]);
-        pr6 = tf.nn.leaky_relu(Conv2d(h_conv6b, W_pr6, [1, 1, 1, 1])+b_pr6);
+        pr6 = tf.nn.leaky_relu(Conv2d(h_conv6b, W_pr6, [1, 1, 1, 1])+b_pr6,alpha=0.1);
         gt6 = tf.nn.avg_pool(ground_truth, ksize = [1, 64, 64, 1], strides=[1, 64, 64, 1], padding='SAME',name='gt6');
         loss6 = loss(pr6, gt6);
 
     # upconv_pr6
     with tf.name_scope('upconv_pr6'):
-        W_upconvpr6 = Weight([4, 4, 1, 1]);
+        W_upconvpr6 = Bilinear_Deconv_Weight([4,4,1,1],"bili_weight6"); #采用双线性差值反卷积核
         b_upconvpr6 = Bias([1]);
-        h_upconvpr6 = tf.nn.leaky_relu(TConv(pr6, W_upconvpr6, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 32), np.int32(IMAGE_SIZE_X / 32), 1]) + b_upconvpr6);
+        h_upconvpr6 = tf.nn.leaky_relu(TConv(pr6, W_upconvpr6, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 32)+1, np.int32(IMAGE_SIZE_X / 32), 1]) + b_upconvpr6,alpha=0.1);
 
     # upconv5
     with tf.name_scope('upconv5'):
-        W_upconv5 = Weight([4, 4, 1024, 512]);
+        W_upconv5 = Weight([4, 4, 512, 1024]); #[kernel_size,kernel_size,output_channel,input_channel]
         b_upconv5 = Bias([512]);
-        h_upconv5 = tf.nn.leaky_relu(tf.contrib.layers.batch_norm(TConv(h_conv6b,W_upconv5,[BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 32), np.int32(IMAGE_SIZE_X / 32), 512]) + b_upconv5, center=True, scale=True, is_training=True))
+        h_upconv5 = tf.nn.leaky_relu(tf.contrib.layers.batch_norm(TConv(h_conv6b,W_upconv5,[BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 32)+1, np.int32(IMAGE_SIZE_X / 32), 512]) + b_upconv5, center=True, scale=True, is_training=True),alpha=0.1)
 
     # iconv5
     with tf.name_scope('iconv5'):
@@ -118,21 +141,21 @@ def DispFulNet_model(concat_image, ground_truth, leftimg):
     with tf.name_scope('pr5_loss5'):
         W_pr5 = Weight([3, 3, 512, 1]);
         b_pr5 = Bias([1]);
-        pr5 = tf.nn.leaky_relu(Conv2d(h_iconv5, W_pr5, [1, 1, 1, 1]) + b_pr5);
+        pr5 = tf.nn.leaky_relu(Conv2d(h_iconv5, W_pr5, [1, 1, 1, 1]) + b_pr5,alpha=0.1);
         gt5 = tf.nn.avg_pool(ground_truth, ksize=[1, 32, 32, 1], strides=[1, 32, 32, 1], padding='SAME', name='gt5');
         loss5 = loss(pr5, gt5);
 
     #upconv4
     with tf.name_scope('upconv4'):
-        W_upconv4 = Weight([4, 4, 512, 256]);
+        W_upconv4 = Weight([4, 4, 256, 512]);
         b_upconv4 = Bias([256]);
-        h_upconv4 = tf.nn.leaky_relu(tf.contrib.layers.batch_norm(TConv(h_iconv5, W_upconv4, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 16), np.int32(IMAGE_SIZE_X / 16), 256]) + b_upconv4, center=True, scale=True, is_training=True))
+        h_upconv4 = tf.nn.leaky_relu(tf.contrib.layers.batch_norm(TConv(h_iconv5, W_upconv4, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 16)+1, np.int32(IMAGE_SIZE_X / 16), 256]) + b_upconv4, center=True, scale=True, is_training=True),alpha=0.1)
 
     # upconv_pr5
     with tf.name_scope('upconv_pr5'):
-        W_upconvpr5 = Weight([4, 4, 1, 1]);
+        W_upconvpr5 = Bilinear_Deconv_Weight([4,4,1,1],"bili_weight5");
         b_upconvpr5 = Bias([1]);
-        h_upconvpr5 = tf.nn.leaky_relu(TConv(pr5, W_upconvpr5, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 32), np.int32(IMAGE_SIZE_X / 32), 1]) + b_upconvpr5);
+        h_upconvpr5 = tf.nn.leaky_relu(TConv(pr5, W_upconvpr5, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 16)+1, np.int32(IMAGE_SIZE_X / 16), 1]) + b_upconvpr5,alpha=0.1);
 
     # iconv4
     with tf.name_scope('iconv4'):
@@ -144,21 +167,21 @@ def DispFulNet_model(concat_image, ground_truth, leftimg):
     with tf.name_scope('pr4_loss4'):
         W_pr4 = Weight([3, 3, 256, 1]);
         b_pr4 = Bias([1]);
-        pr4 = tf.nn.leaky_relu(Conv2d(h_iconv4, W_pr4, [1, 1, 1, 1]) + b_pr4);
+        pr4 = tf.nn.leaky_relu(Conv2d(h_iconv4, W_pr4, [1, 1, 1, 1]) + b_pr4,alpha=0.1);
         gt4 = tf.nn.avg_pool(ground_truth, ksize=[1, 16, 16, 1], strides=[1, 16, 16, 1], padding='SAME',name='gt4');
         loss4 = loss(pr4, gt4);
 
     # upconv3
     with tf.name_scope('upconv3'):
-        W_upconv3 = Weight([4, 4, 256, 128]);
+        W_upconv3 = Weight([4, 4, 128, 256]);
         b_upconv3 = Bias([128]);
-        h_upconv3 = tf.nn.leaky_relu(tf.contrib.layers.batch_norm(TConv(h_iconv4, W_upconv3,[BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 8),np.int32(IMAGE_SIZE_X / 8), 128]) + b_upconv3, center=True, scale=True,is_training=True))
+        h_upconv3 = tf.nn.leaky_relu(tf.contrib.layers.batch_norm(TConv(h_iconv4, W_upconv3,[BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 8)+1,np.int32(IMAGE_SIZE_X / 8), 128]) + b_upconv3, center=True, scale=True,is_training=True),alpha=0.1)
 
     # upconv_pr4
     with tf.name_scope('upconv_pr4'):
-        W_upconvpr4 = Weight([4, 4, 1, 1]);
+        W_upconvpr4 = Bilinear_Deconv_Weight([4,4,1,1],"bili_weight4");
         b_upconvpr4 = Bias([1]);
-        h_upconvpr4 = tf.nn.leaky_relu(TConv(pr4, W_upconvpr4, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 8), np.int32(IMAGE_SIZE_X / 8), 1]) + b_upconvpr4);
+        h_upconvpr4 = tf.nn.leaky_relu(TConv(pr4, W_upconvpr4, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 8)+1, np.int32(IMAGE_SIZE_X / 8), 1]) + b_upconvpr4,alpha=0.1);
 
     # iconv3
     with tf.name_scope('iconv3'):
@@ -170,21 +193,21 @@ def DispFulNet_model(concat_image, ground_truth, leftimg):
     with tf.name_scope('pr3_loss3'):
         W_pr3 = Weight([3, 3, 128, 1]);
         b_pr3 = Bias([1]);
-        pr3 = tf.nn.leaky_relu(Conv2d(h_iconv3, W_pr3, [1, 1, 1, 1]) + b_pr3);
+        pr3 = tf.nn.leaky_relu(Conv2d(h_iconv3, W_pr3, [1, 1, 1, 1]) + b_pr3,alpha=0.1);
         gt3 = tf.nn.avg_pool(ground_truth, ksize=[1, 8, 8, 1], strides=[1, 8, 8, 1], padding='SAME',name='gt3');
         loss3 = loss(pr3, gt3);
 
     # upconv2
     with tf.name_scope('upconv2'):
-        W_upconv2 = Weight([4, 4, 128, 64]);
+        W_upconv2 = Weight([4, 4, 64, 128]);
         b_upconv2 = Bias([64]);
-        h_upconv2 = tf.nn.leaky_relu(tf.contrib.layers.batch_norm(TConv(h_iconv3, W_upconv2, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 4),np.int32(IMAGE_SIZE_X / 4),64]) + b_upconv2,center=True, scale=True, is_training=True))
+        h_upconv2 = tf.nn.leaky_relu(tf.contrib.layers.batch_norm(TConv(h_iconv3, W_upconv2, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 4),np.int32(IMAGE_SIZE_X / 4),64]) + b_upconv2,center=True, scale=True, is_training=True),alpha=0.1)
 
     # upconv_pr3
     with tf.name_scope('upconv_pr3'):
-        W_upconvpr3 = Weight([4, 4, 1, 1]);
+        W_upconvpr3 = Bilinear_Deconv_Weight([4,4,1,1],"bili_weight3");
         b_upconvpr3 = Bias([1]);
-        h_upconvpr3 = tf.nn.leaky_relu(TConv(pr3, W_upconvpr3, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 4), np.int32(IMAGE_SIZE_X / 4),1]) + b_upconvpr3);
+        h_upconvpr3 = tf.nn.leaky_relu(TConv(pr3, W_upconvpr3, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 4), np.int32(IMAGE_SIZE_X / 4),1]) + b_upconvpr3,alpha=0.1);
 
     # iconv2
     with tf.name_scope('iconv2'):
@@ -196,21 +219,21 @@ def DispFulNet_model(concat_image, ground_truth, leftimg):
     with tf.name_scope('pr2_loss2'):
         W_pr2 = Weight([3, 3, 64, 1]);
         b_pr2 = Bias([1]);
-        pr2 = tf.nn.leaky_relu(Conv2d(h_iconv2, W_pr2, [1, 1, 1, 1]) + b_pr2);
+        pr2 = tf.nn.leaky_relu(Conv2d(h_iconv2, W_pr2, [1, 1, 1, 1]) + b_pr2,alpha=0.1);
         gt2 = tf.nn.avg_pool(ground_truth, ksize=[1, 4, 4, 1], strides=[1, 4, 4, 1], padding='SAME',name='gt2');
         loss2 = loss(pr2, gt2);
 
     # upconv1
     with tf.name_scope('upconv1'):
-        W_upconv1 = Weight([4, 4, 64, 32]);
+        W_upconv1 = Weight([4, 4, 32, 64]);
         b_upconv1 = Bias([32]);
-        h_upconv1 = tf.nn.leaky_relu(tf.contrib.layers.batch_norm(TConv(h_iconv2, W_upconv1, [BATCH_SIZE,np.int32(IMAGE_SIZE_Y / 2),np.int32(IMAGE_SIZE_X / 2),32]) + b_upconv1,center=True, scale=True, is_training=True))
+        h_upconv1 = tf.nn.leaky_relu(tf.contrib.layers.batch_norm(TConv(h_iconv2, W_upconv1, [BATCH_SIZE,np.int32(IMAGE_SIZE_Y / 2),np.int32(IMAGE_SIZE_X / 2),32]) + b_upconv1,center=True, scale=True, is_training=True),alpha=0.1)
 
     # upconv_pr2
     with tf.name_scope('upconv_pr2'):
-        W_upconvpr2 = Weight([4, 4, 1, 1]);
+        W_upconvpr2 = Bilinear_Deconv_Weight([4,4,1,1],"bili_weight2");
         b_upconvpr2 = Bias([1]);
-        h_upconvpr2 = tf.nn.leaky_relu(TConv(pr2, W_upconvpr2, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 32), np.int32(IMAGE_SIZE_X / 32),1]) + b_upconvpr2);
+        h_upconvpr2 = tf.nn.leaky_relu(TConv(pr2, W_upconvpr2, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y / 2), np.int32(IMAGE_SIZE_X / 2),1]) + b_upconvpr2,alpha=0.1);
 
     # iconv1
     with tf.name_scope('iconv1'):
@@ -222,21 +245,21 @@ def DispFulNet_model(concat_image, ground_truth, leftimg):
     with tf.name_scope('pr1_loss1'):
         W_pr1 = Weight([3, 3, 32, 1]);
         b_pr1 = Bias([1]);
-        pr1 = tf.nn.leaky_relu(Conv2d(h_iconv1, W_pr1, [1, 1, 1, 1]) + b_pr1);
+        pr1 = tf.nn.leaky_relu(Conv2d(h_iconv1, W_pr1, [1, 1, 1, 1]) + b_pr1,alpha=0.1);
         gt1 = tf.nn.avg_pool(ground_truth, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name='gt1');
         loss1 = loss(pr1, gt1);
 
     # upconv0
     with tf.name_scope('upconv0'):
-        W_upconv0 = Weight([4, 4, 32, 16]);
+        W_upconv0 = Weight([4, 4, 16, 32]);
         b_upconv0 = Bias([16]);
-        h_upconv0 = tf.nn.leaky_relu(tf.contrib.layers.batch_norm(TConv(h_iconv1, W_upconv0, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y), np.int32(IMAGE_SIZE_X), 16]) + b_upconv0, center=True, scale=True,is_training=True))
+        h_upconv0 = tf.nn.leaky_relu(tf.contrib.layers.batch_norm(TConv(h_iconv1, W_upconv0, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y), np.int32(IMAGE_SIZE_X), 16]) + b_upconv0, center=True, scale=True,is_training=True),alpha=0.1)
 
     # upconv_pr1
     with tf.name_scope('upconv_pr1'):
-        W_upconvpr1 = Weight([4, 4, 1, 1]);
+        W_upconvpr1 = Bilinear_Deconv_Weight([4,4,1,1],"bili_weight1");
         b_upconvpr1 = Bias([1]);
-        h_upconvpr1 = tf.nn.leaky_relu(TConv(pr1, W_upconvpr1, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y), np.int32(IMAGE_SIZE_X ),1]) + b_upconvpr1);
+        h_upconvpr1 = tf.nn.leaky_relu(TConv(pr1, W_upconvpr1, [BATCH_SIZE, np.int32(IMAGE_SIZE_Y), np.int32(IMAGE_SIZE_X ),1]) + b_upconvpr1,alpha=0.1);
 
     # iconv0
     with tf.name_scope('iconv0'):
@@ -245,17 +268,19 @@ def DispFulNet_model(concat_image, ground_truth, leftimg):
         h_iconv0 = tf.nn.leaky_relu(Conv2d(tf.concat([h_upconv0, leftimg, h_upconvpr1], 3), W_iconv0, [1, 1, 1, 1]) + b_iconv0, alpha=0.1);
 
     # pr0+loss0
-    with tf.name_scope('pr0+loss0'):
+    with tf.name_scope('pr0_loss0'):
         W_pr0 = Weight([3, 3, 32, 1]);
         b_pr0 = Bias([1]);
-        pr0 = tf.nn.leaky_relu(Conv2d(h_iconv0, W_pr0, [1, 1, 1, 1])+b_pr0);
-        gt0 = tf.nn.avg_pool(ground_truth, ksize=[1, 2 ,2, 1], strides=[1, 2, 2, 1], padding='SAME', name='gt0');
+        pr0 = tf.nn.leaky_relu(Conv2d(h_iconv0, W_pr0, [1, 1, 1, 1])+b_pr0,alpha=0.1);
+        gt0 = tf.nn.avg_pool(ground_truth, ksize=[1, 1, 1, 1], strides=[1, 1, 1, 1], padding='SAME', name='gt0');
         loss0 = loss(pr0,gt0);
 
     output_disparity=pr0
 
     with tf.name_scope('loss'):
-        total_loss=( loss0+ 1/2 * loss1 + 1/4 * loss2 + 1/8 * loss3 + 1/16 * loss4 + 1/32 * loss5 + 1/32 * loss6);
-    return output_disparity, total_loss, loss1, loss2, loss3, loss4, loss5, loss6, pr6, pr5, pr4, pr3, pr2, pr1, tf.is_inf(loss6)
+        total_loss=( loss0 + 1/2 * loss1 + 1/4 * loss2 + 1/8 * loss3 + 1/16 * loss4 + 1/32 * loss5 + 1/32 * loss6);
+
+
+    return output_disparity, total_loss,loss0,loss1, loss2, loss3, loss4, loss5, loss6, pr6, pr5, pr4, pr3, pr2, pr1, pr0,tf.is_inf(loss6)
 
 
