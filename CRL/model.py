@@ -45,8 +45,15 @@ def TConv(x,W,output_shape):
 def max_pool_2(x):
     return tf.nn.max_pool(x,ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name='max_pool');
 
+def max_pool(x,factor):
+    return tf.nn.max_pool(x,ksize=[1,factor,factor,1],stride=[1,factor,factor,1],padding='SAME',name='max_pool_x')
+
 def loss(pre,gt):
     loss = tf.sqrt(tf.reduce_mean(tf.square(pre-gt)));
+    return loss
+
+def l1_loss(pre,gt):
+    loss = tf.abs(pre-gt)
     return loss
 
 def DispFulNet_model(concat_image, ground_truth, leftimg):
@@ -275,12 +282,220 @@ def DispFulNet_model(concat_image, ground_truth, leftimg):
         gt0 = tf.nn.avg_pool(ground_truth, ksize=[1, 1, 1, 1], strides=[1, 1, 1, 1], padding='SAME', name='gt0');
         loss0 = loss(pr0,gt0);
 
-    output_disparity=pr0
 
     with tf.name_scope('loss'):
         total_loss=( loss0 + 1/2 * loss1 + 1/4 * loss2 + 1/8 * loss3 + 1/16 * loss4 + 1/32 * loss5 + 1/32 * loss6);
+        output_disparity = pr0
 
 
     return output_disparity, total_loss,loss0,loss1, loss2, loss3, loss4, loss5, loss6, pr6, pr5, pr4, pr3, pr2, pr1, pr0,tf.is_inf(loss6)
+def DispResNet_model(concate_input,ground_truth,pr1):
+
+    #res_conv1
+    with tf.name_scope('res_conv1'):
+        W_res_conv1 = Weight([5,5,13,64]) #540*960 -> 540*960
+        b_res_conv1 = Bias([64])
+        h_res_conv1 = tf.nn.leaky_relu(Conv2d(concate_input,W_res_conv1,[1,1,1,1])+b_res_conv1,alpha=0.1)
+
+    #res_conv2
+    with tf.name_scope('res_conv2'):
+        W_res_conv2 = Weight([5,5,64,128]) #540*960 -> 270*480
+        b_res_conv2 = Bias([128])
+        h_res_conv2 = tf.nn.leaky_relu(Conv2d(h_res_conv1,W_res_conv2,[1,2,2,1])+b_res_conv2,alpha=0.1)
+
+    #res_conv2_1
+    with tf.name_scope('res_conv2_1'):
+        W_res_conv2_1 = Weight([3,3,128,128]) #270*480 -> 270*480
+        b_res_conv2_1 = Bias([128])
+        h_res_conv2_1 = tf.nn.leaky_relu(Conv2d(h_res_conv2,W_res_conv2_1,[1,1,1,1])+b_res_conv2_1,alpha=0.1)
+
+    #res_conv3
+    with tf.name_scope('res_conv3'):
+        W_res_conv3 = Weight([3,3,128,256]) #270*480 -> 135*240
+        b_res_conv3 = Bias([256])
+        h_res_conv3 = tf.nn.leaky_relu(Conv2d(h_res_conv2_1,W_res_conv3,[1,2,2,1])+b_res_conv3,alpha=0.1)
+
+    #res_conv3_1
+    with tf.name_scope('res_conv3_1'):
+        W_res_conv3_1 = Weight([3,3,256,256]) #135*240 -> 135*240
+        b_res_conv3_1 = Bias([256])
+        h_res_conv3_1 = tf.nn.leaky_relu(Conv2d(h_res_conv3,W_res_conv3_1,[1,1,1,1])+b_res_conv3_1,alpha=0.1)
+
+    #res_conv4
+    with tf.name_scope('res_conv4'):
+        W_res_conv4 = Weight([3,3,256,512]) #135*240 -> 68*120
+        b_res_conv4 = Bias([512])
+        h_res_conv4 = tf.nn.leaky_relu(Conv2d(h_res_conv3_1,W_res_conv4,[1,2,2,1])+b_res_conv4,alpha = 0.1)
+
+    #res_conv4_1
+    with tf.name_scope('res_conv4_1'):
+        W_res_conv4_1 = Weight([3,3,512,512]) #68*120 -> 68*120
+        b_res_conv4_1 = Bias([512])
+        h_res_conv4_1 = tf.nn.leaky_relu(Conv2d(h_res_conv4,W_res_conv4_1,[1,1,1,1])+b_res_conv4_1,alpha=0.1)
+
+    #res_conv5
+    with tf.name_scope('res_conv5'):
+        W_res_conv5 = Weight([3,3,512,1024]) # 68*120 -> 34*60
+        b_res_conv5 = Bias([1024])
+        h_res_conv5 = tf.nn.leaky_relu(Conv2d(h_res_conv4_1,W_res_conv5,[1,2,2,1])+b_res_conv5,alpha=0.1)
+
+    #res_conv5_1
+    with tf.name_scope('res_conv5_1'):
+        W_res_conv5_1 = Weight([3,3,1024,1024]) #34*60 -> 34*60
+        b_res_conv5_1 = Bias([1024])
+        h_res_conv5_1 = tf.nn.leaky_relu(Conv2d(h_res_conv5,W_res_conv5_1,[1,1,1,1])+b_res_conv5_1,alpha=0.1)
+
+    #res_16
+    with tf.name_scope('res_16'):
+        W_res_16 = Weight([3,3,1024,1]) #34*60 -> 34*60
+        b_res_16 = Bias([1])
+        h_res_16 = Conv2d(h_res_conv5_1,W_res_16,[1,1,1,1])+b_res_16
+
+    #pr_s1_16
+    with tf.name_scope('pr_s1_16'):
+        pr1_16 = max_pool(pr1,16) # 540*960 -> 34*60
+
+    #pr_s2_16+loss16
+    with tf.name_scope('pr_s2_16'):
+        pr2_16 = tf.nn.leaky_relu(pr1_16 + h_res_16,alpha=0) #34*60
+        gt_16 = max_pool(x,16)
+        loss_16 = loss(pr2_16,gt_16)
+
+    #res_upconv4
+    with tf.name_scope('res_upconv4'):
+        W_res_upconv4 = Weight([4,4,512,1024]) #34*60 -> 68*120
+        b_res_upconv4 = Bias([512])
+        h_res_upconv4 = tf.nn.leaky_relu(tf.contrib.layers.batch_norm(TConv(h_res_conv5_1,W_res_upconv4,[BATCH_SIZE,np.int32(IMAGE_SIZE_Y/8)+1,np.int32(IMAGE_SIZE_X/8),512])+b_res_upconv4,center=True, scale=True, is_training=True),alpha=0.1)
+
+    #res_upconv4_pr2_16to8
+    with tf.name_scope('res_upconv4_pr2_16to8'):
+        W_res_upconv4_pr2_16to8 = Weight([4,4,1,1]) # 34*60 -> 68*120
+        b_res_upconv4_pr2_16to8 = Bias([1])
+        pr2_16to8 = TConv(pr2_16,W_res_upconv4_pr2_16to8,[BATCH_SIZE,np.int32(IMAGE_SIZE_Y/8)+1,np.int32(IMAGE_SIZE_X/8),1])+b_res_upconv4_pr2_16to8
+
+
+    #res_iconv4
+    with tf.name_scope('rse_iconv4'):
+        W_res_iconv4 = Weight([3,3,1025,512]) #68*120 -> 68*120
+        b_res_iconv4 = Bias([512])
+        h_res_iconv4 = Conv2d(tf.concat(h_res_upconv4,h_res_conv4_1,pr2_16to8),W_res_iconv4,[1,1,1,1])+b_res_iconv4
+
+    #res_8
+    with tf.name_scope('res_8'):
+        W_res_8 = Weight([3,3,512,1]) #68*120 -> 68*120
+        b_res_8 = Bias([1])
+        h_res_8 = Conv2d(h_res_iconv4,W_res_8,[1,1,1,1])+b_res_8
+
+    #pr_s1_8
+    with tf.name_scope('pr_s1_8'):
+        pr1_8 = max_pool(pr1,8)  #540*960 -> 68*120
+
+    #pr_s2_8 + loss_8
+    with tf.name_scope('pr_s2_8'):
+        pr2_8 = tf.nn.leaky_relu(pr1_8+h_res_8,alpha=0) # 68*120
+        gt_8 = max_pool(ground_truth,8)
+        loss_8 = loss(pr2_8,gt_8)
+
+    #res_upconv3
+    with tf.name_scope('res_upconv3'):
+        W_res_upconv3 = Weight([4,4,256,512]) #68*120 -> 135*240
+        b_res_upconv3 = Bias([256])
+        h_res_upconv3 = tf.nn.leaky_relu(tf.contrib.layers.batch_norm(TConv(h_res_iconv4,W_res_upconv3,[BATCH_SIZE,np.int32(IMAGE_SIZE_Y/4),np.int32(IMAGE_SIZE_X/4),256])+b_res_upconv3,center=True, scale=True, is_training=True),alpha=0.1)
+
+    #res_upconv3_pr2_8to4
+    with tf.name_scope('res_upconv3_pr2_8to4'):
+        W_res_upconv3_pr2_8to4 = Weight([4,4,1,1]) #68*120 ->135*240
+        b_res_upconv3_pr2_8to4 = Bias([1])
+        h_res_upconv3_pr2_8to4 = Tconv(pr2_8,W_res_upconv3_pr2_8to4,[BATCH_SIZE,np.int32(IMAGE_SIZE_Y/4),np.int32(IMAGE_X/4),1])+b_res_upconv3_pr2_8to4
+
+    #res_iconv3
+    with tf.name_scope('res_iconv3'):
+        W_res_iconv3 = Weight([3,3,513,256]) #135*240
+        b_res_iconv3 = Bias([256])
+        h_res_iconv3 = Conv2d(tf.concat(h_res_upconv3,h_res_conv3_1,h_res_upconv3_pr2_8to4),W_res_iconv3,[1,1,1,1])+b_res_iconv3
+
+    #res_4
+    with tf.name_scope('res_4'):
+        W_res_4 = Weight([3,3,256,1]) #135*240
+        b_res_4 = Bias([1])
+        h_res_4 = Conv2d(h_res_iconv3,W_res_4,[1,1,1,1])+b_res_4
+
+    #pr_s1_4
+    with tf.name_scope('pr_s1_4'):
+        pr1_4 = max_pool(pr1,4)  #135*240
+
+    #pr_s2_4+loss_4
+    with tf.name_scope('pr_s2_4'):
+        pr2_4 = tf.nn.leaky_relu(pr1_4+h_res_4,alpha=0)
+        gt4 = max_pool(ground_truth,4)
+        loss_4 = loss(pr2_4,gt4)
+
+    #res_upconv2
+    with tf.name_scope('res_upconv2'):
+        W_res_upconv2 = Weight([4,4,128,256]) #135*240 -> 270*480
+        b_res_upconv2 = Bias([128])
+        h_res_upconv2 = tf.nn.leaky_relu(tf.contrib.layers.batch_norm(TConv(h_res_iconv3,W_res_upconv2,[BATCH_SIZE,np.int32(IMAGE_SIZE_Y/2),np.int32(IMAGE_SIZE_X/2),128])+b_res_upconv2,center=True, scale=True, is_training=True),alpha=0.1)
+
+    #res_upconv2_pr2_4to2
+    with tf.name_scope('res_upconv2_pr2_4to8'):
+        W_res_upconv2_pr2_4to2 = Weight([4,4,1,1]) #135*240 ->270*480
+        b_res_upconv2_pr2_4to2 = Bias([1])
+        h_res_upconv2_pr2_4to2 = TConv(pr2_4,W_res_upconv2_pr2_4to2,[BATCH_SIZE,np.int32(IMAGE_SIZE_Y/2),np.int32(IMAGE_SIZE_X/2),1])+b_res_upconv2_pr2_4to2
+
+    #res_iconv2
+    with tf.name_scope('res_iconv2'):
+        W_res_iconv2 = Weight([3,3,257,128])  #270*480 -> 270*480
+        b_res_iconv2 = Bias([128])
+        h_res_iconv2 = Conv2d(tf.concat(h_res_upconv2,h_res_conv2_1,h_res_upconv2_pr2_4to2),W_res_iconv2,[1,1,1,1])+b_res_iconv2
+
+    #res_2
+    with tf.name_scope('res_2'):
+        W_res_2 = Weight([3,3,128,1]) #270*480 -> 270*480
+        b_res_2 =Bias([1])
+        h_res_2 = Conv2d(h_res_iconv2,W_res_2,[1,1,1,1])+b_res_2
+
+    #pr_s1_2
+    with tf.name_scope('pr_s1_2'):
+        pr1_2 = max_pool(pr1,2)  #540*960 -> 270*480
+
+    #pr_s2_2 +loss_2
+    with tf.name_scope('pr_s2_2'):
+        pr2_2 = tf.nn.leaky_relu(pr1_2+h_res_2,alpha=0) #270*480
+        gt2 = max_pool(ground_truth,2)
+        loss_2 =loss(pr2_2,gt2)
+
+    #res_upconv1
+    with tf.name_scope('res_upconv1'):
+        W_res_upconv1 = Weight([4,4,64,128]) #270*480 -> 540*960
+        b_res_upconv1 = Bias([64])
+        h_res_upconv1 = tf.nn.leaky_relu(tf.contrib.layers.batch_norm(TConv(h_res_iconv2,W_res_upconv1,[BATCH_SIZE,np.int32(IMAGE_SIZE_Y),np.int32(IMAGE_SIZE_X),64])+b_res_upconv1,center=True, scale=True, is_training=True),alpha=0.1)
+
+    #res_upconv1_pr2_2to1
+    with tf.name_scope('res_upconv1_pr2_2to1'):
+        W_res_upconv1_pr2_2to1 = Weight([4,4,1,1]) #270*480 -> 540*960
+        b_res_upconv1_pr2_2to1 = Bias([1])
+        h_res_upconv1_pr2_2to1 = TConv(pr2_2,W_res_upconv1_pr2_2to1,[BATCH_SIZE,np.int32(IMAGE_SIZE_Y),np.int32(IMAGE_SIZE_X),1])+b_res_upconv1_pr2_2to1
+
+    #res_1
+    with tf.name_scope('res_iconv1'):
+        W_res_1 = Weight([3,3,129,1]) #540*960 -> 540*960
+        b_res_1 = Bias([1])
+        h_res_1 = Conv2d(tf.concat(h_res_upconv1,h_res_conv1,h_res_upconv1_pr2_2to1),W_res_1)+b_res_1
+
+    #pr_s2
+    with tf.name_scope('pr_s2'):
+        pr2 = tf.nn.leaky_relu(pr1+h_res_1,alpha=0) #540*960
+        loss0 = loss(pr2,ground_truth)
+
+    with tf.name_scope('total loss'):
+        total_loss = 1/16*loss_16 + 1/8*loss_8 + 1/4*loss_4 + 1/2*loss_2 + loss0
+
+    return total_loss,loss0,pr2
+
+
+
+
+
+
 
 
