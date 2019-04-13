@@ -283,4 +283,4 @@ def DispFulNet_model(concat_image, ground_truth, leftimg):
 
     return output_disparity, total_loss,loss0,loss1, loss2, loss3, loss4, loss5, loss6, pr6, pr5, pr4, pr3, pr2, pr1, pr0,tf.is_inf(loss6)
 
-
+def DispResNet_model()
