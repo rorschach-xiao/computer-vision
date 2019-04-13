@@ -48,12 +48,18 @@ def max_pool_2(x):
 def max_pool(x,factor):
     return tf.nn.max_pool(x,ksize=[1,factor,factor,1],stride=[1,factor,factor,1],padding='SAME',name='max_pool_x')
 
-def loss(pre,gt):
+def epe_loss(pre,gt):
     loss = tf.sqrt(tf.reduce_mean(tf.square(pre-gt)));
     return loss
 
 def l1_loss(pre,gt):
     loss = tf.abs(pre-gt)
+    return loss
+
+def smooth_l1_loss(pre,gt):
+    # smooth_l1_loss = 0.5x^2 ,|x|<1
+    #                = |x|-0.5, otherwise
+    loss = tf.reduce_sum(tf.where(tf.greater(1,tf.abs(pre-gt)),0.5*(pre-gt)**2,tf.abs(pre-gt)-0.5))
     return loss
 
 def DispFulNet_model(concat_image, ground_truth, leftimg):
@@ -124,7 +130,7 @@ def DispFulNet_model(concat_image, ground_truth, leftimg):
         b_pr6 = Bias([1]);
         pr6 = tf.nn.leaky_relu(Conv2d(h_conv6b, W_pr6, [1, 1, 1, 1])+b_pr6,alpha=0.1);
         gt6 = tf.nn.avg_pool(ground_truth, ksize = [1, 64, 64, 1], strides=[1, 64, 64, 1], padding='SAME',name='gt6');
-        loss6 = loss(pr6, gt6);
+        loss6 = smooth_l1_loss(pr6, gt6);
 
     # upconv_pr6
     with tf.name_scope('upconv_pr6'):
@@ -150,7 +156,7 @@ def DispFulNet_model(concat_image, ground_truth, leftimg):
         b_pr5 = Bias([1]);
         pr5 = tf.nn.leaky_relu(Conv2d(h_iconv5, W_pr5, [1, 1, 1, 1]) + b_pr5,alpha=0.1);
         gt5 = tf.nn.avg_pool(ground_truth, ksize=[1, 32, 32, 1], strides=[1, 32, 32, 1], padding='SAME', name='gt5');
-        loss5 = loss(pr5, gt5);
+        loss5 = smooth_l1_loss(pr5, gt5);
 
     #upconv4
     with tf.name_scope('upconv4'):
@@ -176,7 +182,7 @@ def DispFulNet_model(concat_image, ground_truth, leftimg):
         b_pr4 = Bias([1]);
         pr4 = tf.nn.leaky_relu(Conv2d(h_iconv4, W_pr4, [1, 1, 1, 1]) + b_pr4,alpha=0.1);
         gt4 = tf.nn.avg_pool(ground_truth, ksize=[1, 16, 16, 1], strides=[1, 16, 16, 1], padding='SAME',name='gt4');
-        loss4 = loss(pr4, gt4);
+        loss4 = smooth_l1_loss(pr4, gt4);
 
     # upconv3
     with tf.name_scope('upconv3'):
@@ -202,7 +208,7 @@ def DispFulNet_model(concat_image, ground_truth, leftimg):
         b_pr3 = Bias([1]);
         pr3 = tf.nn.leaky_relu(Conv2d(h_iconv3, W_pr3, [1, 1, 1, 1]) + b_pr3,alpha=0.1);
         gt3 = tf.nn.avg_pool(ground_truth, ksize=[1, 8, 8, 1], strides=[1, 8, 8, 1], padding='SAME',name='gt3');
-        loss3 = loss(pr3, gt3);
+        loss3 = smooth_l1_loss(pr3, gt3);
 
     # upconv2
     with tf.name_scope('upconv2'):
@@ -228,7 +234,7 @@ def DispFulNet_model(concat_image, ground_truth, leftimg):
         b_pr2 = Bias([1]);
         pr2 = tf.nn.leaky_relu(Conv2d(h_iconv2, W_pr2, [1, 1, 1, 1]) + b_pr2,alpha=0.1);
         gt2 = tf.nn.avg_pool(ground_truth, ksize=[1, 4, 4, 1], strides=[1, 4, 4, 1], padding='SAME',name='gt2');
-        loss2 = loss(pr2, gt2);
+        loss2 = smooth_l1_loss(pr2, gt2);
 
     # upconv1
     with tf.name_scope('upconv1'):
@@ -254,7 +260,7 @@ def DispFulNet_model(concat_image, ground_truth, leftimg):
         b_pr1 = Bias([1]);
         pr1 = tf.nn.leaky_relu(Conv2d(h_iconv1, W_pr1, [1, 1, 1, 1]) + b_pr1,alpha=0.1);
         gt1 = tf.nn.avg_pool(ground_truth, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name='gt1');
-        loss1 = loss(pr1, gt1);
+        loss1 = smooth_l1_loss(pr1, gt1);
 
     # upconv0
     with tf.name_scope('upconv0'):
@@ -280,15 +286,17 @@ def DispFulNet_model(concat_image, ground_truth, leftimg):
         b_pr0 = Bias([1]);
         pr0 = tf.nn.leaky_relu(Conv2d(h_iconv0, W_pr0, [1, 1, 1, 1])+b_pr0,alpha=0.1);
         gt0 = tf.nn.avg_pool(ground_truth, ksize=[1, 1, 1, 1], strides=[1, 1, 1, 1], padding='SAME', name='gt0');
-        loss0 = loss(pr0,gt0);
+        loss0 = smooth_l1_loss(pr0,gt0);
 
 
     with tf.name_scope('loss'):
         total_loss=( loss0 + 1/2 * loss1 + 1/4 * loss2 + 1/8 * loss3 + 1/16 * loss4 + 1/32 * loss5 + 1/32 * loss6);
         output_disparity = pr0
+        epe = epe_loss(pr0,ground_truth)
 
 
-    return output_disparity, total_loss,loss0,loss1, loss2, loss3, loss4, loss5, loss6, pr6, pr5, pr4, pr3, pr2, pr1, pr0,tf.is_inf(loss6)
+
+    return output_disparity, epe,total_loss,loss0,loss1, loss2, loss3, loss4, loss5, loss6, pr6, pr5, pr4, pr3, pr2, pr1, pr0,tf.is_inf(loss6)
 def DispResNet_model(concate_input,ground_truth,pr1):
 
     #res_conv1
@@ -358,8 +366,8 @@ def DispResNet_model(concate_input,ground_truth,pr1):
     #pr_s2_16+loss16
     with tf.name_scope('pr_s2_16'):
         pr2_16 = tf.nn.leaky_relu(pr1_16 + h_res_16,alpha=0) #34*60
-        gt_16 = max_pool(x,16)
-        loss_16 = loss(pr2_16,gt_16)
+        gt_16 = max_pool(ground_truth,16)
+        loss_16 = smooth_l1_loss(pr2_16,gt_16)
 
     #res_upconv4
     with tf.name_scope('res_upconv4'):
@@ -394,7 +402,7 @@ def DispResNet_model(concate_input,ground_truth,pr1):
     with tf.name_scope('pr_s2_8'):
         pr2_8 = tf.nn.leaky_relu(pr1_8+h_res_8,alpha=0) # 68*120
         gt_8 = max_pool(ground_truth,8)
-        loss_8 = loss(pr2_8,gt_8)
+        loss_8 = smooth_l1_loss(pr2_8,gt_8)
 
     #res_upconv3
     with tf.name_scope('res_upconv3'):
@@ -406,7 +414,7 @@ def DispResNet_model(concate_input,ground_truth,pr1):
     with tf.name_scope('res_upconv3_pr2_8to4'):
         W_res_upconv3_pr2_8to4 = Weight([4,4,1,1]) #68*120 ->135*240
         b_res_upconv3_pr2_8to4 = Bias([1])
-        h_res_upconv3_pr2_8to4 = Tconv(pr2_8,W_res_upconv3_pr2_8to4,[BATCH_SIZE,np.int32(IMAGE_SIZE_Y/4),np.int32(IMAGE_X/4),1])+b_res_upconv3_pr2_8to4
+        h_res_upconv3_pr2_8to4 = TConv(pr2_8,W_res_upconv3_pr2_8to4,[BATCH_SIZE,np.int32(IMAGE_SIZE_Y/4),np.int32(IMAGE_SIZE_X/4),1])+b_res_upconv3_pr2_8to4
 
     #res_iconv3
     with tf.name_scope('res_iconv3'):
@@ -428,7 +436,7 @@ def DispResNet_model(concate_input,ground_truth,pr1):
     with tf.name_scope('pr_s2_4'):
         pr2_4 = tf.nn.leaky_relu(pr1_4+h_res_4,alpha=0)
         gt4 = max_pool(ground_truth,4)
-        loss_4 = loss(pr2_4,gt4)
+        loss_4 = smooth_l1_loss(pr2_4,gt4)
 
     #res_upconv2
     with tf.name_scope('res_upconv2'):
@@ -462,7 +470,7 @@ def DispResNet_model(concate_input,ground_truth,pr1):
     with tf.name_scope('pr_s2_2'):
         pr2_2 = tf.nn.leaky_relu(pr1_2+h_res_2,alpha=0) #270*480
         gt2 = max_pool(ground_truth,2)
-        loss_2 =loss(pr2_2,gt2)
+        loss_2 = smooth_l1_loss(pr2_2,gt2)
 
     #res_upconv1
     with tf.name_scope('res_upconv1'):
@@ -485,17 +493,14 @@ def DispResNet_model(concate_input,ground_truth,pr1):
     #pr_s2
     with tf.name_scope('pr_s2'):
         pr2 = tf.nn.leaky_relu(pr1+h_res_1,alpha=0) #540*960
-        loss0 = loss(pr2,ground_truth)
+        loss0 = smooth_l1_loss(pr2,ground_truth)
 
     with tf.name_scope('total loss'):
         total_loss = 1/16*loss_16 + 1/8*loss_8 + 1/4*loss_4 + 1/2*loss_2 + loss0
+        epe = epe_loss(pr2,ground_truth)
 
-    return total_loss,loss0,pr2
-
-
-
+    return total_loss,loss0,pr2,epe
 
 
 
 
-def DispResNet_model()
